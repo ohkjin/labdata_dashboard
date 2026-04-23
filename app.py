@@ -122,9 +122,10 @@ def load_data() -> pd.DataFrame:
 
     df["data_availability"] = pd.to_numeric(df["data_availability"], errors="coerce").fillna(0)
     df["page_accessibility"] = pd.to_numeric(df["page_accessibility"], errors="coerce").fillna(0)
+    df["server_route"] = df["server_route"].fillna("-")
 
     df["person_in_charge"] = df["person_in_charge"].fillna("Unassigned")
-    df["data_sensitivity"] = df["data_sensitivity"].fillna("Unknown")
+    df["data_sensitivity"] = df["data_sensitivity"].fillna("")
     df["category"] = df["category"].fillna("Uncategorized")
 
     if "spatial_unit" not in df.columns:
@@ -332,8 +333,12 @@ with tab_actions:
         issues = []
         if row["data_availability"] == 0.0:
             issues.append("🔴 Data not available")
+            if row["server_route"] == "-":
+                issues.append("🟠 Missing server route")
         elif row["data_availability"] == 0.5:
             issues.append("🟠 Data needs verfication")
+            if row["server_route"] == "":
+                issues.append("🟠 Missing server route")
         # if row["page_accessibility"] == 0.0:
         #     issues.append("🔴 Page not accessible")
         # elif row["page_accessibility"] == 0.5:
@@ -370,6 +375,7 @@ with tab_actions:
                 "Sensitivity": row["data_sensitivity"],
                 "Owner": row["person_in_charge"],
                 "Availability": STATUS_LABELS.get(row["data_availability"], "?"),
+                "Server Route": row["server_route"],
                 "Top Severity": top_severity,
                 "Issues": " · ".join(issues),
                 "Issue Count": len(issues),
@@ -389,11 +395,11 @@ with tab_actions:
             "Filter", ["All", "Private Only"],
             horizontal=True,
         )
-        if severity == "Private Only":
+        if severity == "Private Data Only":
             action_df = action_df[action_df["Sensitivity"] == "Private"]
 
         st.dataframe(
-            action_df[["Category", "Name", "Owner", "Availability", "Issues"]],
+            action_df[["Category", "Name", "Owner", "Availability", "Server Route", "Issues"]],
             width="stretch",
             hide_index=True,
             column_config={
