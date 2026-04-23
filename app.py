@@ -4,7 +4,7 @@ import re
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="Lab Data Catalog", page_icon="📊", layout="wide")
+st.set_page_config(page_title="Lab Data Catalog", page_icon="💻", layout="wide")
 
 EXCEL_CANDIDATES = [
     "데이터 정리_ 서버 탐색 및 cross-check 작업.xlsx",
@@ -83,6 +83,27 @@ def sort_by_suffix(values: list[str]) -> list[str]:
     return sorted(values, key=temporal_sort_key)
 
 
+def safe_bar_chart(
+    data: pd.DataFrame,
+    x: str,
+    y: str,
+    *,
+    horizontal: bool = False,
+    empty_message: str = "No data to visualize for this selection.",
+) -> None:
+    if data.empty:
+        st.info(empty_message)
+        return
+    if y not in data.columns:
+        st.info(empty_message)
+        return
+    numeric = pd.to_numeric(data[y], errors="coerce").dropna()
+    if numeric.empty:
+        st.info(empty_message)
+        return
+    st.bar_chart(data, x=x, y=y, horizontal=horizontal)
+
+
 @st.cache_data
 def load_data() -> pd.DataFrame:
     base = Path(__file__).resolve().parent
@@ -122,6 +143,8 @@ def load_data() -> pd.DataFrame:
     for col in text_cols:
         if col in df.columns:
             df[col] = df[col].fillna("")
+            # Ensure homogeneous string dtype for Streamlit Arrow serialization.
+            df[col] = df[col].where(df[col].notna(), "").astype(str)
 
     df["unit_spatial"] = df["spatial_unit"].astype(str)
     df["unit_temporal"] = df["temporal_unit"].astype(str)
@@ -172,7 +195,7 @@ fdf = df[
 ]
 
 # ── Header ────────────────────────────────────────────────────────────────────
-st.title("📊 Lab Data Catalog & Tracker")
+st.title("Lab Data Catalog & Tracker")
 st.caption(f"Showing **{len(fdf)}** of {len(df)} datasets")
 
 # ── Top KPI row ──────────────────────────────────────────────────────────────
@@ -186,8 +209,8 @@ k5.metric("Unassigned", int((fdf["person_in_charge"] == "Unassigned").sum()))
 st.divider()
 
 # ── Tabs ─────────────────────────────────────────────────────────────────────
-tab_overview, tab_explorer, tab_catalog, tab_progress, tab_actions = st.tabs(
-    ["🏠 Overview", "🧭 Unit/Region/Period", "🗂️ Catalog", "📈 Progress & Gaps", "✅ Action Items"]
+tab_overview, tab_progress, tab_actions, tab_explorer, tab_catalog = st.tabs(
+    ["📊 Overview","📈 Progress & Gaps", "✅ Action Items","🔍 Unit/Region/Period", "🗂️ Catalog"]
 )
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -202,13 +225,13 @@ with tab_overview:
         st.markdown("##### Datasets by Category")
         cat_counts = fdf["category"].value_counts().reset_index()
         cat_counts.columns = ["Category", "Count"]
-        st.bar_chart(cat_counts, x="Category", y="Count", horizontal=True)
+        safe_bar_chart(cat_counts, x="Category", y="Count", horizontal=True)
 
     with col_right:
         st.markdown("##### Datasets by Region")
         region_counts = fdf[fdf["region"] != ""]["region"].value_counts().head(15).reset_index()
         region_counts.columns = ["Region", "Count"]
-        st.bar_chart(region_counts, x="Region", y="Count", horizontal=True)
+        safe_bar_chart(region_counts, x="Region", y="Count", horizontal=True)
 
     st.markdown("---")
     st.markdown("##### Category × Region Coverage")
@@ -217,7 +240,7 @@ with tab_overview:
             fdf[fdf["region"] != ""], values="name", index="category",
             columns="region", aggfunc="count", fill_value=0,
         )
-        st.dataframe(matrix, use_container_width=True)
+        st.dataframe(matrix, width="stretch")
         st.caption("Cell = number of datasets. Zeros reveal gaps in coverage.")
 
     st.markdown("---")
@@ -226,13 +249,167 @@ with tab_overview:
         st.markdown("##### Public vs Private")
         sens = fdf["data_sensitivity"].value_counts().reset_index()
         sens.columns = ["Sensitivity", "Count"]
-        st.bar_chart(sens, x="Sensitivity", y="Count")
+        safe_bar_chart(sens, x="Sensitivity", y="Count")
     with col_b:
         st.markdown("##### How data is obtained")
         methods = fdf[fdf["data_availability_detail"] != ""]["data_availability_detail"].value_counts().reset_index()
         methods.columns = ["Method", "Count"]
-        st.bar_chart(methods, x="Method", y="Count")
+        safe_bar_chart(methods, x="Method", y="Count")
 
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  TAB 4 — Progress & Gaps: what's been done, what's missing?                ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+with tab_progress:
+    st.subheader("What's been done vs. what's missing?")
+
+    st.markdown("##### Overall Readiness")
+    total = len(fdf)
+    if total > 0:
+        avail_full = int((fdf["data_availability"] == 1.0).sum())
+        avail_partial = int((fdf["data_availability"] == 0.5).sum())
+        avail_none = int((fdf["data_availability"] == 0.0).sum())
+        access_full = int((fdf["page_accessibility"] == 1.0).sum())
+        access_partial = int((fdf["page_accessibility"] == 0.5).sum())
+        access_none = int((fdf["page_accessibility"] == 0.0).sum())
+        assigned = int((fdf["person_in_charge"] != "Unassigned").sum())
+        has_link = int((fdf["site_link"] != "").sum())
+
+        readiness = pd.DataFrame({
+            "Field": [
+                "Data Available", "Data Partially Available", "Data Not Available",
+                "Page Accessible", "Page Partially Accessible", "Page Not Accessible",
+                "Person Assigned", "Has Link",
+            ],
+            "Count": [
+                avail_full, avail_partial, avail_none,
+                access_full, access_partial, access_none,
+                assigned, has_link,
+            ],
+            "Pct": [
+                f"{v * 100 / total:.0f}%" for v in [
+                    avail_full, avail_partial, avail_none,
+                    access_full, access_partial, access_none,
+                    assigned, has_link,
+                ]
+            ],
+        })
+        st.dataframe(readiness, width="stretch", hide_index=True)
+
+    st.markdown("---")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("##### Availability by Category")
+        avail_cat = fdf.groupby("category")["data_availability"].mean().reset_index()
+        avail_cat.columns = ["Category", "Avg Availability"]
+        avail_cat["Avg Availability"] = (avail_cat["Avg Availability"] * 100).round(0)
+        safe_bar_chart(avail_cat, x="Category", y="Avg Availability")
+        st.caption("100 = all fully available, 0 = none available")
+
+    with c2:
+        st.markdown("##### Ownership by Person")
+        owner_counts = fdf["person_in_charge"].value_counts().reset_index()
+        owner_counts.columns = ["Person", "Datasets"]
+        st.dataframe(owner_counts, width="stretch", hide_index=True)
+        safe_bar_chart(owner_counts, x="Person", y="Datasets")
+
+    st.markdown("---")
+    st.markdown("##### Completeness Scores (metadata fill rate)")
+    comp_df = fdf[["name", "category", "person_in_charge", "completeness"]].sort_values("completeness")
+    st.dataframe(comp_df, width="stretch", hide_index=True)
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  TAB 5 — Action Items: what needs to be done next?                         ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+with tab_actions:
+    st.subheader("What needs to be done?")
+    severity_order = ["🔴", "🟠", "🟡", "⚪"]
+    severity_rank = {marker: idx for idx, marker in enumerate(severity_order)}
+
+    def get_issues(row: pd.Series) -> list[str]:
+        issues = []
+        if row["data_availability"] == 0.0:
+            issues.append("🔴 Data not available")
+        elif row["data_availability"] == 0.5:
+            issues.append("🟠 Data needs verfication")
+        # if row["page_accessibility"] == 0.0:
+        #     issues.append("🔴 Page not accessible")
+        # elif row["page_accessibility"] == 0.5:
+        #     issues.append("🟠 Page partially accessible")
+        if row["data_sensitivity"] == "Private" and row["person_in_charge"] == "Unassigned":
+            issues.append("🟡 No owner assigned for Private")
+        if row["site_link"] == "":
+            issues.append("🟡 Missing link")
+        if row["region"] == "":
+            issues.append("⚪ Missing region")
+        if row["period"] == "":
+            issues.append("⚪ Missing period")
+        if row["spatial_unit"] == "":
+            issues.append("⚪ Missing spatial unit")
+        if row["temporal_unit"] == "":
+            issues.append("⚪ Missing temporal unit")
+        return issues
+
+    def get_top_severity(issues: list[str]) -> tuple[str, int]:
+        ranks = [severity_rank[issue[0]] for issue in issues if issue and issue[0] in severity_rank]
+        if not ranks:
+            return "Unknown", len(severity_order)
+        top_rank = min(ranks)
+        return severity_order[top_rank], top_rank
+
+    action_rows = []
+    for _, row in fdf.iterrows():
+        issues = get_issues(row)
+        if issues:
+            top_severity, top_severity_rank = get_top_severity(issues)
+            action_rows.append({
+                "Category": row["category"],
+                "Name": row["name"],
+                "Sensitivity": row["data_sensitivity"],
+                "Owner": row["person_in_charge"],
+                "Availability": STATUS_LABELS.get(row["data_availability"], "?"),
+                "Top Severity": top_severity,
+                "Issues": " · ".join(issues),
+                "Issue Count": len(issues),
+                "Top Severity Rank": top_severity_rank,
+            })
+
+    if not action_rows:
+        st.success("All datasets are complete — nothing to do!")
+    else:
+        action_df = pd.DataFrame(action_rows).sort_values(
+            ["Top Severity Rank", "Issue Count"], ascending=[True, False]
+        )
+
+        st.markdown(f"**{len(action_df)}** datasets need attention out of {len(fdf)} shown.")
+
+        severity = st.radio(
+            "Filter", ["All", "Private Only"],
+            horizontal=True,
+        )
+        if severity == "Private Only":
+            action_df = action_df[action_df["Sensitivity"] == "Private"]
+
+        st.dataframe(
+            action_df[["Category", "Name", "Owner", "Availability", "Issues"]],
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "Name": st.column_config.TextColumn("Name", width="medium"),
+                "Issues": st.column_config.TextColumn("Issues", width="large"),
+            },
+        )
+
+        st.markdown("---")
+        st.markdown("##### Summary of all issues")
+        all_issues = []
+        for issues_str in action_df["Issues"]:
+            all_issues.extend(issues_str.split(" · "))
+        issue_summary = pd.Series(all_issues).value_counts().reset_index()
+        issue_summary.columns = ["Issue", "Count"]
+        st.dataframe(issue_summary, width="stretch", hide_index=True)
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  TAB 2 — Unit/Region/Period Explorer                                      ║
@@ -297,7 +474,7 @@ with tab_explorer:
         "period_end",
         "person_in_charge",
     ]
-    st.dataframe(explorer_df[explorer_cols], use_container_width=True, hide_index=True)
+    st.dataframe(explorer_df[explorer_cols], width="stretch", hide_index=True)
 
     st.markdown("---")
     c1, c2 = st.columns(2)
@@ -305,7 +482,7 @@ with tab_explorer:
         st.markdown("##### Spatial Unit Distribution")
         spatial_dist = spatial_exp["spatial_token"].value_counts().reset_index()
         spatial_dist.columns = ["Spatial Unit", "Count"]
-        st.bar_chart(spatial_dist, x="Spatial Unit", y="Count", horizontal=True)
+        safe_bar_chart(spatial_dist, x="Spatial Unit", y="Count", horizontal=True)
     with c2:
         st.markdown("##### Temporal Unit Distribution")
         temporal_dist = temporal_exp.groupby("temporal_token", as_index=False).size()
@@ -316,7 +493,7 @@ with tab_explorer:
         )
         temporal_dist = temporal_dist.sort_values("Temporal Unit")
         temporal_dist["Temporal Unit"] = temporal_dist["Temporal Unit"].astype(str)
-        st.bar_chart(temporal_dist, x="Temporal Unit", y="Count", horizontal=True)
+        safe_bar_chart(temporal_dist, x="Temporal Unit", y="Count", horizontal=True)
 
     st.markdown("---")
     c3, c4 = st.columns(2)
@@ -330,7 +507,7 @@ with tab_explorer:
             aggfunc="count",
             fill_value=0,
         )
-        st.dataframe(unit_region, use_container_width=True)
+        st.dataframe(unit_region, width="stretch")
     with c4:
         st.markdown("##### Temporal Unit × Period Type")
         temporal_period = pd.pivot_table(
@@ -342,7 +519,7 @@ with tab_explorer:
             fill_value=0,
         )
         temporal_period = temporal_period.reindex(sort_by_suffix(list(temporal_period.index)))
-        st.dataframe(temporal_period, use_container_width=True)
+        st.dataframe(temporal_period, width="stretch")
 
     
 
@@ -375,7 +552,7 @@ with tab_catalog:
     ]
     st.dataframe(
         show_df[catalog_cols],
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         column_config={
             "site_link": st.column_config.LinkColumn("Site Link", display_text="Open"),
@@ -388,145 +565,3 @@ with tab_catalog:
     csv = display_df.to_csv(index=False).encode("utf-8-sig")
     st.download_button("📥 Download as CSV", csv, "lab_data_catalog.csv", "text/csv")
 
-
-# ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║  TAB 4 — Progress & Gaps: what's been done, what's missing?                ║
-# ╚══════════════════════════════════════════════════════════════════════════════╝
-with tab_progress:
-    st.subheader("What's been done vs. what's missing?")
-
-    st.markdown("##### Overall Readiness")
-    total = len(fdf)
-    if total > 0:
-        avail_full = int((fdf["data_availability"] == 1.0).sum())
-        avail_partial = int((fdf["data_availability"] == 0.5).sum())
-        avail_none = int((fdf["data_availability"] == 0.0).sum())
-        access_full = int((fdf["page_accessibility"] == 1.0).sum())
-        access_partial = int((fdf["page_accessibility"] == 0.5).sum())
-        access_none = int((fdf["page_accessibility"] == 0.0).sum())
-        assigned = int((fdf["person_in_charge"] != "Unassigned").sum())
-        has_link = int((fdf["site_link"] != "").sum())
-
-        readiness = pd.DataFrame({
-            "Field": [
-                "Data Available", "Data Partially Available", "Data Not Available",
-                "Page Accessible", "Page Partially Accessible", "Page Not Accessible",
-                "Person Assigned", "Has Link",
-            ],
-            "Count": [
-                avail_full, avail_partial, avail_none,
-                access_full, access_partial, access_none,
-                assigned, has_link,
-            ],
-            "Pct": [
-                f"{v * 100 / total:.0f}%" for v in [
-                    avail_full, avail_partial, avail_none,
-                    access_full, access_partial, access_none,
-                    assigned, has_link,
-                ]
-            ],
-        })
-        st.dataframe(readiness, use_container_width=True, hide_index=True)
-
-    st.markdown("---")
-
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("##### Availability by Category")
-        avail_cat = fdf.groupby("category")["data_availability"].mean().reset_index()
-        avail_cat.columns = ["Category", "Avg Availability"]
-        avail_cat["Avg Availability"] = (avail_cat["Avg Availability"] * 100).round(0)
-        st.bar_chart(avail_cat, x="Category", y="Avg Availability")
-        st.caption("100 = all fully available, 0 = none available")
-
-    with c2:
-        st.markdown("##### Ownership by Person")
-        owner_counts = fdf["person_in_charge"].value_counts().reset_index()
-        owner_counts.columns = ["Person", "Datasets"]
-        st.dataframe(owner_counts, use_container_width=True, hide_index=True)
-        st.bar_chart(owner_counts, x="Person", y="Datasets")
-
-    st.markdown("---")
-    st.markdown("##### Completeness Scores (metadata fill rate)")
-    comp_df = fdf[["name", "category", "person_in_charge", "completeness"]].sort_values("completeness")
-    st.dataframe(comp_df, use_container_width=True, hide_index=True)
-
-
-# ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║  TAB 5 — Action Items: what needs to be done next?                         ║
-# ╚══════════════════════════════════════════════════════════════════════════════╝
-with tab_actions:
-    st.subheader("What needs to be done?")
-
-    def get_issues(row: pd.Series) -> list[str]:
-        issues = []
-        if row["person_in_charge"] == "Unassigned":
-            issues.append("🔴 No owner assigned")
-        if row["data_availability"] == 0.0:
-            issues.append("🔴 Data not available")
-        elif row["data_availability"] == 0.5:
-            issues.append("🟡 Data only partially available")
-        if row["page_accessibility"] == 0.0:
-            issues.append("🔴 Page not accessible")
-        elif row["page_accessibility"] == 0.5:
-            issues.append("🟡 Page partially accessible")
-        if row["site_link"] == "":
-            issues.append("🟠 Missing link")
-        if row["region"] == "":
-            issues.append("⚪ Missing region")
-        if row["period"] == "":
-            issues.append("⚪ Missing period")
-        if row["spatial_unit"] == "":
-            issues.append("⚪ Missing spatial unit")
-        if row["temporal_unit"] == "":
-            issues.append("⚪ Missing temporal unit")
-        return issues
-
-    action_rows = []
-    for _, row in fdf.iterrows():
-        issues = get_issues(row)
-        if issues:
-            action_rows.append({
-                "Category": row["category"],
-                "Name": row["name"],
-                "Region": row["region"],
-                "Owner": row["person_in_charge"],
-                "Availability": STATUS_LABELS.get(row["data_availability"], "?"),
-                "Issues": " · ".join(issues),
-                "Issue Count": len(issues),
-            })
-
-    if not action_rows:
-        st.success("All datasets are complete — nothing to do!")
-    else:
-        action_df = pd.DataFrame(action_rows).sort_values("Issue Count", ascending=False)
-
-        st.markdown(f"**{len(action_df)}** datasets need attention out of {len(fdf)} shown.")
-
-        severity = st.radio(
-            "Filter by severity", ["All", "🔴 Critical only", "🟡 Warnings+Critical"],
-            horizontal=True,
-        )
-        if severity == "🔴 Critical only":
-            action_df = action_df[action_df["Issues"].str.contains("🔴")]
-        elif severity == "🟡 Warnings+Critical":
-            action_df = action_df[action_df["Issues"].str.contains("🔴|🟡")]
-
-        st.dataframe(
-            action_df[["Category", "Name", "Region", "Owner", "Availability", "Issues"]],
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Name": st.column_config.TextColumn("Name", width="medium"),
-                "Issues": st.column_config.TextColumn("Issues", width="large"),
-            },
-        )
-
-        st.markdown("---")
-        st.markdown("##### Summary of all issues")
-        all_issues = []
-        for issues_str in action_df["Issues"]:
-            all_issues.extend(issues_str.split(" · "))
-        issue_summary = pd.Series(all_issues).value_counts().reset_index()
-        issue_summary.columns = ["Issue", "Count"]
-        st.dataframe(issue_summary, use_container_width=True, hide_index=True)
