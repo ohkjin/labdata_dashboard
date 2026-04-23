@@ -5,3 +5,8 @@ port = 8501
 
 [theme]
 base = "light"
+primaryColor = "#96a4b3"
+backgroundColor = "#F8FAFC"
+secondaryBackgroundColor = "#ccd6e0"
+textColor = "#1F2937"
+font = "sans serif"
